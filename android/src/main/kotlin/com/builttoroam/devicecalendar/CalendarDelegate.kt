@@ -52,7 +52,6 @@ import com.builttoroam.devicecalendar.common.Constants.Companion.EVENT_PROJECTIO
 import com.builttoroam.devicecalendar.common.Constants.Companion.EVENT_PROJECTION_TITLE_INDEX
 import com.builttoroam.devicecalendar.common.Constants.Companion.REMINDER_MINUTES_INDEX
 import com.builttoroam.devicecalendar.common.Constants.Companion.REMINDER_PROJECTION
-import com.builttoroam.devicecalendar.common.DayOfWeek
 import com.builttoroam.devicecalendar.common.ErrorCodes.Companion.GENERIC_ERROR
 import com.builttoroam.devicecalendar.common.ErrorCodes.Companion.INVALID_ARGUMENT
 import com.builttoroam.devicecalendar.common.ErrorCodes.Companion.NOT_ALLOWED
@@ -63,7 +62,6 @@ import com.builttoroam.devicecalendar.common.ErrorMessages.Companion.CALENDAR_ID
 import com.builttoroam.devicecalendar.common.ErrorMessages.Companion.CREATE_EVENT_ARGUMENTS_NOT_VALID_MESSAGE
 import com.builttoroam.devicecalendar.common.ErrorMessages.Companion.EVENT_ID_CANNOT_BE_NULL_ON_DELETION_MESSAGE
 import com.builttoroam.devicecalendar.common.ErrorMessages.Companion.NOT_AUTHORIZED_MESSAGE
-import com.builttoroam.devicecalendar.common.RecurrenceFrequency
 import com.builttoroam.devicecalendar.models.*
 import com.builttoroam.devicecalendar.models.Calendar
 import com.google.gson.Gson
@@ -73,9 +71,6 @@ import io.flutter.plugin.common.PluginRegistry
 import io.flutter.plugin.common.PluginRegistry.Registrar
 import kotlinx.coroutines.*
 import org.dmfs.rfc5545.DateTime
-import org.dmfs.rfc5545.Weekday
-import org.dmfs.rfc5545.recur.Freq
-import java.text.SimpleDateFormat
 import java.util.*
 
 class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
@@ -86,11 +81,6 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
     private val DELETE_EVENT_REQUEST_CODE = CREATE_OR_UPDATE_EVENT_REQUEST_CODE + 1
     private val REQUEST_PERMISSIONS_REQUEST_CODE = DELETE_EVENT_REQUEST_CODE + 1
     private val DELETE_CALENDAR_REQUEST_CODE = REQUEST_PERMISSIONS_REQUEST_CODE + 1
-    private val PART_TEMPLATE = ";%s="
-    private val BYMONTHDAY_PART = "BYMONTHDAY"
-    private val BYMONTH_PART = "BYMONTH"
-    private val BYSETPOS_PART = "BYSETPOS"
-
     private val _cachedParametersMap: MutableMap<Int, CalendarMethodsParametersCacheModel> = mutableMapOf()
     private var _registrar: Registrar? = null
     private var _context: Context? = null
@@ -102,8 +92,6 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
         _registrar = registrar
         _context = context
         val gsonBuilder = GsonBuilder()
-        gsonBuilder.registerTypeAdapter(RecurrenceFrequency::class.java, RecurrenceFrequencySerializer())
-        gsonBuilder.registerTypeAdapter(DayOfWeek::class.java, DayOfWeekSerializer())
         gsonBuilder.registerTypeAdapter(Availability::class.java, AvailabilitySerializer())
         _gson = gsonBuilder.create()
     }
@@ -256,7 +244,7 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
 
             val contentResolver: ContentResolver? = _context?.contentResolver
 
-            val calendar = retrieveCalendar(calendarId,pendingChannelResult,true);
+            val calendar = retrieveCalendar(calendarId,pendingChannelResult,true)
             if(calendar != null) {
                 val calenderUriWithId = ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarIdNumber)
                 val deleteSucceeded = contentResolver?.delete(calenderUriWithId, null, null) ?: 0
@@ -496,8 +484,7 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
         values.put(Events.AVAILABILITY, getAvailability(event.availability))
 
         if (event.recurrenceRule != null) {
-            val recurrenceRuleParams = buildRecurrenceRuleParams(event.recurrenceRule!!)
-            values.put(Events.RRULE, recurrenceRuleParams)
+            values.put(Events.RRULE, event.recurrenceRule)
         }
         return values
     }
@@ -722,76 +709,12 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
         event.allDay = allDay
         event.location = location
         event.url = url
-        event.recurrenceRule = parseRecurrenceRuleString(recurringRule)
+        event.recurrenceRule = recurringRule
         event.startTimeZone = startTimeZone
         event.endTimeZone = endTimeZone
         event.availability = availability
 
         return event
-    }
-
-    private fun parseRecurrenceRuleString(recurrenceRuleString: String?): RecurrenceRule? {
-        if (recurrenceRuleString == null) {
-            return null
-        }
-
-        val rfcRecurrenceRule = org.dmfs.rfc5545.recur.RecurrenceRule(recurrenceRuleString)
-        val frequency = when (rfcRecurrenceRule.freq) {
-            Freq.YEARLY -> RecurrenceFrequency.YEARLY
-            Freq.MONTHLY -> RecurrenceFrequency.MONTHLY
-            Freq.WEEKLY -> RecurrenceFrequency.WEEKLY
-            Freq.DAILY -> RecurrenceFrequency.DAILY
-            else -> null
-        }
-
-        val recurrenceRule = RecurrenceRule(frequency!!)
-        if (rfcRecurrenceRule.count != null) {
-            recurrenceRule.totalOccurrences = rfcRecurrenceRule.count
-        }
-
-        recurrenceRule.interval = rfcRecurrenceRule.interval
-        if (rfcRecurrenceRule.until != null) {
-            recurrenceRule.endDate = rfcRecurrenceRule.until.timestamp
-        }
-
-        when (rfcRecurrenceRule.freq) {
-            Freq.WEEKLY, Freq.MONTHLY, Freq.YEARLY -> {
-                recurrenceRule.daysOfWeek = rfcRecurrenceRule.byDayPart?.mapNotNull {
-                    DayOfWeek.values().find { dayOfWeek -> dayOfWeek.ordinal == it.weekday.ordinal }
-                }?.toMutableList()
-            }
-        }
-
-        val rfcRecurrenceRuleString = rfcRecurrenceRule.toString()
-        if (rfcRecurrenceRule.freq == Freq.MONTHLY || rfcRecurrenceRule.freq == Freq.YEARLY) {
-            // Get week number value from BYSETPOS
-            recurrenceRule.weekOfMonth = convertCalendarPartToNumericValues(rfcRecurrenceRuleString, BYSETPOS_PART)
-
-            // If value is not found in BYSETPOS and not repeating by nth day or nth month
-            // Get the week number value from the BYDAY position
-            if (recurrenceRule.weekOfMonth == null && rfcRecurrenceRule.byDayPart != null) {
-                recurrenceRule.weekOfMonth = rfcRecurrenceRule.byDayPart.first().pos
-            }
-
-            recurrenceRule.dayOfMonth = convertCalendarPartToNumericValues(rfcRecurrenceRuleString, BYMONTHDAY_PART)
-
-            if (rfcRecurrenceRule.freq == Freq.YEARLY) {
-                recurrenceRule.monthOfYear = convertCalendarPartToNumericValues(rfcRecurrenceRuleString, BYMONTH_PART)
-            }
-        }
-
-        return recurrenceRule
-    }
-
-    private fun convertCalendarPartToNumericValues(rfcRecurrenceRuleString: String, partName: String): Int? {
-        val partIndex = rfcRecurrenceRuleString.indexOf(partName)
-        if (partIndex == -1) {
-            return null
-        }
-
-        return rfcRecurrenceRuleString.substring(partIndex).split(";").firstOrNull()?.split("=")?.lastOrNull()?.split(",")?.map {
-            it.toInt()
-        }?.firstOrNull()
     }
 
     private fun parseAttendeeRow(cursor: Cursor?): Attendee? {
@@ -891,70 +814,6 @@ class CalendarDelegate : PluginRegistry.RequestPermissionsResultListener {
 
     private fun atLeastAPI(api: Int): Boolean {
         return api <= android.os.Build.VERSION.SDK_INT
-    }
-
-    private fun buildRecurrenceRuleParams(recurrenceRule: RecurrenceRule): String {
-        val frequencyParam = when (recurrenceRule.recurrenceFrequency) {
-            RecurrenceFrequency.DAILY -> Freq.DAILY
-            RecurrenceFrequency.WEEKLY -> Freq.WEEKLY
-            RecurrenceFrequency.MONTHLY -> Freq.MONTHLY
-            RecurrenceFrequency.YEARLY -> Freq.YEARLY
-        }
-        val rr = org.dmfs.rfc5545.recur.RecurrenceRule(frequencyParam)
-        if (recurrenceRule.interval != null) {
-            rr.interval = recurrenceRule.interval!!
-        }
-
-        if (recurrenceRule.recurrenceFrequency == RecurrenceFrequency.WEEKLY ||
-            recurrenceRule.weekOfMonth != null && (recurrenceRule.recurrenceFrequency == RecurrenceFrequency.MONTHLY || recurrenceRule.recurrenceFrequency == RecurrenceFrequency.YEARLY)) {
-            rr.byDayPart = buildByDayPart(recurrenceRule)
-        }
-
-        if (recurrenceRule.totalOccurrences != null) {
-            rr.count = recurrenceRule.totalOccurrences!!
-        } else if (recurrenceRule.endDate != null) {
-            val calendar = java.util.Calendar.getInstance()
-            calendar.timeInMillis = recurrenceRule.endDate!!
-            val dateFormat = SimpleDateFormat("yyyyMMdd")
-            dateFormat.timeZone = calendar.timeZone
-            rr.until = DateTime(calendar.timeZone, recurrenceRule.endDate!!)
-        }
-
-        var rrString = rr.toString()
-
-        if (recurrenceRule.monthOfYear != null && recurrenceRule.recurrenceFrequency == RecurrenceFrequency.YEARLY) {
-            rrString = rrString.addPartWithValues(BYMONTH_PART, recurrenceRule.monthOfYear)
-        }
-
-        if (recurrenceRule.recurrenceFrequency == RecurrenceFrequency.MONTHLY || recurrenceRule.recurrenceFrequency == RecurrenceFrequency.YEARLY) {
-            if (recurrenceRule.weekOfMonth == null) {
-                rrString = rrString.addPartWithValues(BYMONTHDAY_PART, recurrenceRule.dayOfMonth)
-            }
-        }
-
-        return rrString
-    }
-
-    private fun buildByDayPart(recurrenceRule: RecurrenceRule): List<org.dmfs.rfc5545.recur.RecurrenceRule.WeekdayNum>? {
-        if (recurrenceRule.daysOfWeek?.isEmpty() == true) {
-            return null
-        }
-
-        return recurrenceRule.daysOfWeek?.mapNotNull { dayOfWeek ->
-            Weekday.values().firstOrNull {
-                it.ordinal == dayOfWeek.ordinal
-            }
-        }?.map {
-            org.dmfs.rfc5545.recur.RecurrenceRule.WeekdayNum(recurrenceRule.weekOfMonth ?: 0, it)
-        }
-    }
-
-    private fun String.addPartWithValues(partName: String, values: Int?): String {
-        if (values != null) {
-            return this + PART_TEMPLATE.format(partName) + values
-        }
-
-        return this
     }
 
     private fun parseAvailability(availability: Int): Availability? = when (availability) {

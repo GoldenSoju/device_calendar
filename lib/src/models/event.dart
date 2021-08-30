@@ -1,8 +1,9 @@
+import 'package:rrule/rrule.dart';
+
 import '../../device_calendar.dart';
 import '../common/calendar_enums.dart';
 import '../common/error_messages.dart';
 import 'attendee.dart';
-import 'recurrence_rule.dart';
 import 'package:timezone/timezone.dart';
 import 'package:collection/collection.dart';
 
@@ -119,7 +120,15 @@ class Event {
     }
 
     if (json['recurrenceRule'] != null) {
-      recurrenceRule = RecurrenceRule.fromJson(json['recurrenceRule']);
+      String rrule = json['recurrenceRule']
+          .replaceFirst(RegExp('(WKST=)(TU|WE|TH|FR|SA|SU)'), 'WKST=MO');
+
+      if (rrule.contains(RegExp('RRULE:')) == false) {
+        rrule = 'RRULE:$rrule';
+      }
+
+      print('RRULE JSON: $rrule');
+      recurrenceRule = RecurrenceRule.fromString(rrule);
     }
 
     if (json['reminders'] != null) {
@@ -155,7 +164,7 @@ class Event {
     }
 
     if (recurrenceRule != null) {
-      data['recurrenceRule'] = recurrenceRule?.toJson();
+      data['recurrenceRule'] = recurrenceRule?.toString();
     }
 
     if (reminders != null) {

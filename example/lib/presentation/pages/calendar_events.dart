@@ -96,11 +96,11 @@ class _CalendarEventsPageState extends State<CalendarEventsPage> {
     });
   }
 
-  Future _onDeletedFinished(bool deleteSucceeded) async {
+  Future _onDeletedFinished(BuildContext context, bool deleteSucceeded) async {
     if (deleteSucceeded) {
       await _retrieveCalendarEvents();
     } else {
-      _scaffoldstate.currentState!.showSnackBar(SnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Oops, we ran into an issue deleting the event'),
         backgroundColor: Colors.red,
         duration: Duration(seconds: 5),

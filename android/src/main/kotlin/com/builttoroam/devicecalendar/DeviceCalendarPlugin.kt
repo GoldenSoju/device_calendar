@@ -1,9 +1,8 @@
 package com.builttoroam.devicecalendar
 
 import android.content.Context
+import android.util.Log
 import com.builttoroam.devicecalendar.common.Constants
-import com.builttoroam.devicecalendar.common.DayOfWeek
-import com.builttoroam.devicecalendar.common.RecurrenceFrequency
 import com.builttoroam.devicecalendar.models.*
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -42,13 +41,6 @@ class DeviceCalendarPlugin() : MethodCallHandler {
     private val EVENT_START_TIMEZONE_ARGUMENT = "eventStartTimeZone"
     private val EVENT_END_TIMEZONE_ARGUMENT = "eventEndTimeZone"
     private val RECURRENCE_RULE_ARGUMENT = "recurrenceRule"
-    private val RECURRENCE_FREQUENCY_ARGUMENT = "recurrenceFrequency"
-    private val TOTAL_OCCURRENCES_ARGUMENT = "totalOccurrences"
-    private val INTERVAL_ARGUMENT = "interval"
-    private val DAYS_OF_WEEK_ARGUMENT = "daysOfWeek"
-    private val DAY_OF_MONTH_ARGUMENT = "dayOfMonth"
-    private val MONTH_OF_YEAR_ARGUMENT = "monthOfYear"
-    private val WEEK_OF_MONTH_ARGUMENT = "weekOfMonth"
     private val ATTENDEES_ARGUMENT = "attendees"
     private val EMAIL_ADDRESS_ARGUMENT = "emailAddress"
     private val NAME_ARGUMENT = "name"
@@ -133,7 +125,7 @@ class DeviceCalendarPlugin() : MethodCallHandler {
             }
             DELETE_CALENDAR_METHOD -> {
                 val calendarId = call.argument<String>(CALENDAR_ID_ARGUMENT)
-                _calendarDelegate.deleteCalendar(calendarId!!,result)
+                _calendarDelegate.deleteCalendar(calendarId!!, result)
             }
             else -> {
                 result.notImplemented()
@@ -157,8 +149,13 @@ class DeviceCalendarPlugin() : MethodCallHandler {
         event.availability = parseAvailability(call.argument<String>(EVENT_AVAILABILITY_ARGUMENT))
 
         if (call.hasArgument(RECURRENCE_RULE_ARGUMENT) && call.argument<Map<String, Any>>(RECURRENCE_RULE_ARGUMENT) != null) {
-            val recurrenceRule = parseRecurrenceRuleArgs(call)
-            event.recurrenceRule = recurrenceRule
+            var rrule = call.argument<String>(RECURRENCE_RULE_ARGUMENT) ?: ""
+            val regEx = Regex("RRULE:")
+            if (rrule.contains(regEx)) {
+                rrule = rrule.replace(regEx, "")
+                Log.d("RECURRENCE RULE:", rrule)
+            }
+            event.recurrenceRule = rrule
         }
 
         if (call.hasArgument(ATTENDEES_ARGUMENT) && call.argument<List<Map<String, Any>>>(ATTENDEES_ARGUMENT) != null) {
@@ -182,49 +179,6 @@ class DeviceCalendarPlugin() : MethodCallHandler {
         }
 
         return event
-    }
-
-    private fun parseRecurrenceRuleArgs(call: MethodCall): RecurrenceRule {
-        val recurrenceRuleArgs = call.argument<Map<String, Any>>(RECURRENCE_RULE_ARGUMENT)!!
-        val recurrenceFrequencyIndex = recurrenceRuleArgs[RECURRENCE_FREQUENCY_ARGUMENT] as Int
-        val recurrenceRule = RecurrenceRule(RecurrenceFrequency.values()[recurrenceFrequencyIndex])
-        if (recurrenceRuleArgs.containsKey(TOTAL_OCCURRENCES_ARGUMENT)) {
-            recurrenceRule.totalOccurrences = recurrenceRuleArgs[TOTAL_OCCURRENCES_ARGUMENT] as Int
-        }
-
-        if (recurrenceRuleArgs.containsKey(INTERVAL_ARGUMENT)) {
-            recurrenceRule.interval = recurrenceRuleArgs[INTERVAL_ARGUMENT] as Int
-        }
-
-        if (recurrenceRuleArgs.containsKey(END_DATE_ARGUMENT)) {
-            recurrenceRule.endDate = recurrenceRuleArgs[END_DATE_ARGUMENT] as Long
-        }
-
-        if (recurrenceRuleArgs.containsKey(DAYS_OF_WEEK_ARGUMENT)) {
-            recurrenceRule.daysOfWeek = recurrenceRuleArgs[DAYS_OF_WEEK_ARGUMENT].toListOf<Int>()?.map { DayOfWeek.values()[it] }?.toMutableList()
-        }
-
-        if (recurrenceRuleArgs.containsKey(DAY_OF_MONTH_ARGUMENT)) {
-            recurrenceRule.dayOfMonth = recurrenceRuleArgs[DAY_OF_MONTH_ARGUMENT] as Int
-        }
-
-        if (recurrenceRuleArgs.containsKey(MONTH_OF_YEAR_ARGUMENT)) {
-            recurrenceRule.monthOfYear = recurrenceRuleArgs[MONTH_OF_YEAR_ARGUMENT] as Int
-        }
-
-        if (recurrenceRuleArgs.containsKey(WEEK_OF_MONTH_ARGUMENT)) {
-            recurrenceRule.weekOfMonth = recurrenceRuleArgs[WEEK_OF_MONTH_ARGUMENT] as Int
-        }
-
-        return recurrenceRule
-    }
-
-    private inline fun <reified T : Any> Any?.toListOf(): List<T>? {
-        return (this as List<*>?)?.filterIsInstance<T>()?.toList()
-    }
-
-    private inline fun <reified T : Any> Any?.toMutableListOf(): MutableList<T>? {
-        return this?.toListOf<T>()?.toMutableList()
     }
 
     private fun parseAvailability(value: String?): Availability? =

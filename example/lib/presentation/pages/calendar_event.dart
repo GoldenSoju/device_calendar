@@ -5,7 +5,7 @@ import 'package:device_calendar/device_calendar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-
+import 'package:rrule/rrule.dart';
 import '../date_time_picker.dart';
 import '../recurring_event_dialog.dart';
 import 'event_attendee.dart';
@@ -43,7 +43,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
   TZDateTime? _endDate;
   late TimeOfDay _endTime;
 
-  bool _autovalidate = false;
+  AutovalidateMode _autovalidate = AutovalidateMode.disabled;
   DayOfWeekGroup? _dayOfWeekGroup = DayOfWeekGroup.None;
 
   bool _isRecurringEvent = false;
@@ -52,12 +52,12 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
   int? _totalOccurrences;
   int? _interval;
   late DateTime _recurrenceEndDate;
-  RecurrenceFrequency? _recurrenceFrequency = RecurrenceFrequency.Daily;
-  List<DayOfWeek> _daysOfWeek = [];
-  int? _dayOfMonth;
+  Frequency? _recurrenceFrequency = Frequency.daily;
+  Set<ByWeekDayEntry> _daysOfWeek = {};
+  Set<int> _dayOfMonth = {};
   final List<int> _validDaysOfMonth = [];
-  MonthOfYear? _monthOfYear;
-  WeekNumber? _weekOfMonth;
+  Set<int> _monthOfYear = {};
+  Set<int> _weekOfMonth = {};
   DayOfWeek? _selectedDayOfWeek = DayOfWeek.Monday;
   Availability _availability = Availability.Busy;
 
@@ -100,9 +100,9 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
       print('DeviceCalendarPlugin calendar id is: ${_calendar.id}');
 
       _recurrenceEndDate = _endDate as DateTime;
-      _dayOfMonth = 1;
-      _monthOfYear = MonthOfYear.January;
-      _weekOfMonth = WeekNumber.First;
+      _dayOfMonth = {};
+      _monthOfYear = {};
+      _weekOfMonth = {};
       _availability = Availability.Busy;
     } else {
       _startDate = _event!.start!;
@@ -119,26 +119,26 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
 
       if (_isRecurringEvent) {
         _interval = _event!.recurrenceRule!.interval!;
-        _totalOccurrences = _event!.recurrenceRule!.totalOccurrences;
-        _recurrenceFrequency = _event!.recurrenceRule!.recurrenceFrequency;
+        _totalOccurrences = _event!.recurrenceRule!.count;
+        _recurrenceFrequency = _event!.recurrenceRule!.frequency;
 
         if (_totalOccurrences != null) {
           _recurrenceRuleEndType = RecurrenceRuleEndType.MaxOccurrences;
         }
 
-        if (_event!.recurrenceRule!.endDate != null) {
+        if (_event!.recurrenceRule!.until != null) {
           _recurrenceRuleEndType = RecurrenceRuleEndType.SpecifiedEndDate;
-          _recurrenceEndDate = _event!.recurrenceRule!.endDate!;
+          _recurrenceEndDate = _event!.recurrenceRule!.until!;
         }
 
-        _isByDayOfMonth = _event?.recurrenceRule?.weekOfMonth == null;
-        _daysOfWeek = _event?.recurrenceRule?.daysOfWeek ?? <DayOfWeek>[];
-        _monthOfYear =
-            _event?.recurrenceRule?.monthOfYear ?? MonthOfYear.January;
-        _weekOfMonth = _event?.recurrenceRule?.weekOfMonth ?? WeekNumber.First;
-        _selectedDayOfWeek =
-        _daysOfWeek.isNotEmpty ? _daysOfWeek.first : DayOfWeek.Monday;
-        _dayOfMonth = _event?.recurrenceRule?.dayOfMonth ?? 1;
+        _isByDayOfMonth = _event?.recurrenceRule?.hasByMonthDays == null;
+        _daysOfWeek = _event?.recurrenceRule?.byWeekDays ?? <ByWeekDayEntry>{};
+        _monthOfYear = _event?.recurrenceRule?.byMonths ?? {1};
+        _weekOfMonth = _event?.recurrenceRule?.byWeeks ?? {1};
+        _selectedDayOfWeek = _daysOfWeek.isNotEmpty
+            ? DayOfWeek.values[_daysOfWeek.first.day]
+            : DayOfWeek.Monday;
+        _dayOfMonth = _event?.recurrenceRule?.byMonthDays ?? {};
 
         if (_daysOfWeek.isNotEmpty) {
           _updateDaysOfWeekGroup();
@@ -182,7 +182,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
           child: Column(
             children: [
               Form(
-                autovalidate: _autovalidate,
+                autovalidateMode: _autovalidate,
                 key: _formKey,
                 child: Column(
                   children: [
@@ -479,7 +479,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                     if (_isRecurringEvent) ...[
                       ListTile(
                         leading: Text('Select a Recurrence Type'),
-                        trailing: DropdownButton<RecurrenceFrequency>(
+                        trailing: DropdownButton<Frequency>(
                           onChanged: (selectedFrequency) {
                             setState(() {
                               _recurrenceFrequency = selectedFrequency;
@@ -487,7 +487,15 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                             });
                           },
                           value: _recurrenceFrequency,
-                          items: RecurrenceFrequency.values
+                          items: [
+                            Frequency.secondly,
+                            Frequency.minutely,
+                            Frequency.hourly,
+                            Frequency.daily,
+                            Frequency.weekly,
+                            Frequency.monthly,
+                            Frequency.yearly,
+                          ]
                               .map((frequency) => DropdownMenuItem(
                                     value: frequency,
                                     child:
@@ -514,8 +522,9 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                                 validator: _validateInterval,
                                 textAlign: TextAlign.right,
                                 onSaved: (String? value) {
-                                  if (value != null)
+                                  if (value != null) {
                                     _interval = int.tryParse(value);
+                                  }
                                 },
                               ),
                             ),
@@ -524,20 +533,22 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                           ],
                         ),
                       ),
-                      if (_recurrenceFrequency ==
-                          RecurrenceFrequency.Weekly) ...[
+                      if (_recurrenceFrequency == Frequency.weekly) ...[
                         Column(
                           children: [
                             ...DayOfWeek.values.map((day) {
                               return CheckboxListTile(
                                 title: Text(day.enumToString),
-                                value: _daysOfWeek.any((dow) => dow == day),
+                                value: _daysOfWeek.any((dow) =>
+                                    dow == ByWeekDayEntry(day.index + 1)),
                                 onChanged: (selected) {
                                   setState(() {
                                     if (selected == true) {
-                                      _daysOfWeek.add(day);
+                                      _daysOfWeek
+                                          .add(ByWeekDayEntry(day.index + 1));
                                     } else {
-                                      _daysOfWeek.remove(day);
+                                      _daysOfWeek.remove(
+                                          ByWeekDayEntry(day.index + 1));
                                     }
                                     _updateDaysOfWeekGroup(selectedDay: day);
                                   });
@@ -563,9 +574,8 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                           ],
                         )
                       ],
-                      if (_recurrenceFrequency == RecurrenceFrequency.Monthly ||
-                          _recurrenceFrequency ==
-                              RecurrenceFrequency.Yearly) ...[
+                      if (_recurrenceFrequency == Frequency.monthly ||
+                          _recurrenceFrequency == Frequency.yearly) ...[
                         SwitchListTile(
                           value: _isByDayOfMonth,
                           onChanged: (value) =>
@@ -573,18 +583,19 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                           title: Text('By day of the month'),
                         )
                       ],
-                      if (_recurrenceFrequency == RecurrenceFrequency.Yearly &&
+                      if (_recurrenceFrequency == Frequency.yearly &&
                           _isByDayOfMonth) ...[
                         ListTile(
                           leading: Text('Month of the year'),
                           trailing: DropdownButton<MonthOfYear>(
                             onChanged: (value) {
                               setState(() {
-                                _monthOfYear = value;
+                                _monthOfYear = {value?.index ?? 1};
                                 _getValidDaysOfMonth(_recurrenceFrequency);
                               });
                             },
-                            value: _monthOfYear,
+                            value:
+                                MonthOfYear.values.toList()[_monthOfYear.first],
                             items: MonthOfYear.values
                                 .map((month) => DropdownMenuItem(
                                       value: month,
@@ -595,19 +606,19 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                         ),
                       ],
                       if (_isByDayOfMonth &&
-                          (_recurrenceFrequency ==
-                                  RecurrenceFrequency.Monthly ||
-                              _recurrenceFrequency ==
-                                  RecurrenceFrequency.Yearly)) ...[
+                          (_recurrenceFrequency == Frequency.monthly ||
+                              _recurrenceFrequency == Frequency.yearly)) ...[
                         ListTile(
                           leading: Text('Day of the month'),
                           trailing: DropdownButton<int>(
                             onChanged: (value) {
                               setState(() {
-                                _dayOfMonth = value;
+                                if (value != null) {
+                                  _dayOfMonth.add(value);
+                                }
                               });
                             },
-                            value: _dayOfMonth,
+                            value: _dayOfMonth.first,
                             items: _validDaysOfMonth
                                 .map((day) => DropdownMenuItem(
                                       value: day,
@@ -618,10 +629,8 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                         ),
                       ],
                       if (!_isByDayOfMonth &&
-                          (_recurrenceFrequency ==
-                                  RecurrenceFrequency.Monthly ||
-                              _recurrenceFrequency ==
-                                  RecurrenceFrequency.Yearly)) ...[
+                          (_recurrenceFrequency == Frequency.monthly ||
+                              _recurrenceFrequency == Frequency.yearly)) ...[
                         Padding(
                           padding: const EdgeInsets.fromLTRB(15, 10, 15, 10),
                           child: Align(
@@ -645,10 +654,13 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                                 child: DropdownButton<WeekNumber>(
                                   onChanged: (value) {
                                     setState(() {
-                                      _weekOfMonth = value;
+                                      _weekOfMonth = {value?.index ?? 1};
                                     });
                                   },
-                                  value: _weekOfMonth ?? WeekNumber.First,
+                                  value: WeekNumber.values.toList()[
+                                      _weekOfMonth.isNotEmpty
+                                          ? _weekOfMonth.first
+                                          : 0],
                                   items: WeekNumber.values
                                       .map((weekNum) => DropdownMenuItem(
                                             value: weekNum,
@@ -676,17 +688,19 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                                       .toList(),
                                 ),
                               ),
-                              if (_recurrenceFrequency ==
-                                  RecurrenceFrequency.Yearly) ...[
+                              if (_recurrenceFrequency == Frequency.yearly) ...[
                                 Text('of'),
                                 Flexible(
                                   child: DropdownButton<MonthOfYear>(
                                     onChanged: (value) {
                                       setState(() {
-                                        _monthOfYear = value;
+                                        _monthOfYear = {value?.index ?? 0};
                                       });
                                     },
-                                    value: _monthOfYear,
+                                    value: MonthOfYear.values.toList()[
+                                        _monthOfYear.isNotEmpty
+                                            ? _monthOfYear.first
+                                            : 0],
                                     items: MonthOfYear.values
                                         .map((month) => DropdownMenuItem(
                                               value: month,
@@ -739,8 +753,10 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
                                   validator: _validateTotalOccurrences,
                                   textAlign: TextAlign.right,
                                   onSaved: (String? value) {
-                                    if (value != null)
-                                      _totalOccurrences = int.tryParse(value);
+                                    if (value != null) {
+                                      _totalOccurrences =
+                                          int.tryParse(value) ?? 1;
+                                    }
                                   },
                                 ),
                               ),
@@ -807,36 +823,42 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
           onPressed: () async {
             final form = _formKey.currentState;
             if (form?.validate() == false) {
-              _autovalidate = true; // Start validating on every change.
-              showInSnackBar('Please fix the errors in red before submitting.');
+              _autovalidate =
+                  AutovalidateMode.always; // Start validating on every change.
+              showInSnackBar(
+                  context, 'Please fix the errors in red before submitting.');
             } else {
               form?.save();
               if (_isRecurringEvent) {
                 if (!_isByDayOfMonth &&
-                    (_recurrenceFrequency == RecurrenceFrequency.Monthly ||
-                        _recurrenceFrequency == RecurrenceFrequency.Yearly)) {
+                    (_recurrenceFrequency == Frequency.monthly ||
+                        _recurrenceFrequency == Frequency.yearly)) {
                   // Setting day of the week parameters for WeekNumber to avoid clashing with the weekly recurrence values
                   _daysOfWeek.clear();
-                  if (_selectedDayOfWeek != null)
-                    _daysOfWeek.add(_selectedDayOfWeek as DayOfWeek);
+                  if (_selectedDayOfWeek != null) {
+                    _daysOfWeek
+                        .add(ByWeekDayEntry(_selectedDayOfWeek?.index ?? 1));
+                  }
                 } else {
-                  _weekOfMonth = null;
+                  _weekOfMonth = {};
                 }
 
-                _event?.recurrenceRule = RecurrenceRule(_recurrenceFrequency,
+                _event?.recurrenceRule = RecurrenceRule(
+                    frequency: _recurrenceFrequency ?? Frequency.daily,
                     interval: _interval,
-                    totalOccurrences: (_recurrenceRuleEndType ==
+                    count: (_recurrenceRuleEndType ==
                             RecurrenceRuleEndType.MaxOccurrences)
                         ? _totalOccurrences
                         : null,
-                    endDate: _recurrenceRuleEndType ==
+                    until: _recurrenceRuleEndType ==
                             RecurrenceRuleEndType.SpecifiedEndDate
-                        ? _recurrenceEndDate
+                        ? _recurrenceEndDate.toUtc()
                         : null,
-                    daysOfWeek: _daysOfWeek,
-                    dayOfMonth: _dayOfMonth,
-                    monthOfYear: _monthOfYear,
-                    weekOfMonth: _weekOfMonth);
+                    // weekStart: DateTime.monday,
+                    byWeekDays: _daysOfWeek,
+                    byMonthDays: _dayOfMonth,
+                    byMonths: _monthOfYear,
+                    byWeeks: _weekOfMonth);
               }
               _event?.attendees = _attendees;
               _event?.reminders = _reminders;
@@ -846,9 +868,11 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
               if (createEventResult?.isSuccess == true) {
                 Navigator.pop(context, true);
               } else {
-                showInSnackBar(createEventResult?.errors
-                    .map((err) => '[${err.errorCode}] ${err.errorMessage}')
-                    .join(' | ') as String);
+                showInSnackBar(
+                    context,
+                    createEventResult?.errors
+                        .map((err) => '[${err.errorCode}] ${err.errorMessage}')
+                        .join(' | ') as String);
               }
             }
           },
@@ -858,34 +882,27 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
     );
   }
 
-  Text _recurrenceFrequencyToText(RecurrenceFrequency? recurrenceFrequency) {
-    switch (recurrenceFrequency) {
-      case RecurrenceFrequency.Daily:
+  Text _recurrenceFrequencyToText(Frequency? recurrenceFrequency) {
+    return Text(recurrenceFrequency.toString());
+    /* switch (recurrenceFrequency) {
+      case Frequency.daily:
         return Text('Daily');
-      case RecurrenceFrequency.Weekly:
+      case Frequency.weekly:
         return Text('Weekly');
-      case RecurrenceFrequency.Monthly:
+      case Frequency.Monthly:
         return Text('Monthly');
-      case RecurrenceFrequency.Yearly:
+      case Frequency.Yearly:
         return Text('Yearly');
       default:
         return Text('');
-    }
+    }*/
   }
 
-  Text _recurrenceFrequencyToIntervalText(
-      RecurrenceFrequency? recurrenceFrequency) {
-    switch (recurrenceFrequency) {
-      case RecurrenceFrequency.Daily:
-        return Text(' Day(s)');
-      case RecurrenceFrequency.Weekly:
-        return Text(' Week(s) on');
-      case RecurrenceFrequency.Monthly:
-        return Text(' Month(s)');
-      case RecurrenceFrequency.Yearly:
-        return Text(' Year(s)');
-      default:
-        return Text('');
+  Text _recurrenceFrequencyToIntervalText(Frequency? recurrenceFrequency) {
+    if (recurrenceFrequency == Frequency.weekly) {
+      return Text(' ${recurrenceFrequency.toString()}(s) on');
+    } else {
+      return Text(' ${recurrenceFrequency.toString()}(s)');
     }
   }
 
@@ -903,14 +920,14 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
   }
 
   // Get total days of a month
-  void _getValidDaysOfMonth(RecurrenceFrequency? frequency) {
+  void _getValidDaysOfMonth(Frequency? frequency) {
     _validDaysOfMonth.clear();
     var totalDays = 0;
 
     // Year frequency: Get total days of the selected month
-    if (frequency == RecurrenceFrequency.Yearly) {
+    if (frequency == Frequency.yearly) {
       totalDays = DateTime(DateTime.now().year,
-              _monthOfYear?.value != null ? _monthOfYear!.value + 1 : 1, 0)
+              _monthOfYear.isNotEmpty ? _monthOfYear.first : 1, 0)
           .day;
     } else {
       // Otherwise, get total days of the current month
@@ -925,14 +942,37 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
 
   void _updateDaysOfWeek() {
     if (_dayOfWeekGroup == null) return;
-    var days = _dayOfWeekGroup!.getDays;
+    // var days = _dayOfWeekGroup!.getDays;
 
     switch (_dayOfWeekGroup) {
       case DayOfWeekGroup.Weekday:
+        _daysOfWeek.clear();
+        _daysOfWeek.addAll([
+          ByWeekDayEntry(1),
+          ByWeekDayEntry(2),
+          ByWeekDayEntry(3),
+          ByWeekDayEntry(4),
+          ByWeekDayEntry(5),
+        ]);
+        break;
       case DayOfWeekGroup.Weekend:
+        _daysOfWeek.clear();
+        _daysOfWeek.addAll([
+          ByWeekDayEntry(6),
+          ByWeekDayEntry(7),
+        ]);
+        break;
       case DayOfWeekGroup.AllDays:
         _daysOfWeek.clear();
-        _daysOfWeek.addAll(days.where((a) => _daysOfWeek.every((b) => a != b)));
+        _daysOfWeek.addAll([
+          ByWeekDayEntry(1),
+          ByWeekDayEntry(2),
+          ByWeekDayEntry(3),
+          ByWeekDayEntry(4),
+          ByWeekDayEntry(5),
+          ByWeekDayEntry(6),
+          ByWeekDayEntry(7),
+        ]);
         break;
       case DayOfWeekGroup.None:
         _daysOfWeek.clear();
@@ -1009,7 +1049,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
         .add(Duration(hours: time.hour, minutes: time.minute));
   }
 
-  void showInSnackBar(String value) {
-    _scaffoldKey.currentState!.showSnackBar(SnackBar(content: Text(value)));
+  void showInSnackBar(BuildContext context, String value) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
   }
 }

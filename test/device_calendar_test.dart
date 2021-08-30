@@ -64,7 +64,8 @@ void main() {
     final String? calendarId = null;
     final params = RetrieveEventsParams();
 
-    final result = await deviceCalendarPlugin.retrieveEvents(calendarId, params);
+    final result =
+        await deviceCalendarPlugin.retrieveEvents(calendarId, params);
     expect(result.isSuccess, false);
     expect(result.errors.length, greaterThan(0));
     expect(result.errors[0].errorCode, equals(ErrorCodes.invalidArguments));
@@ -176,8 +177,17 @@ void main() {
   });
 
   test('Event_Serialises_Correctly', () async {
-    final event = Event('calendarId',eventId: 'eventId',start: TZDateTime(
-      timeZoneDatabase.locations.entries.skip(20).first.value, 1980, 10,1,0,0,0), availability: Availability.Busy);
+    final event = Event('calendarId',
+        eventId: 'eventId',
+        start: TZDateTime(
+            timeZoneDatabase.locations.entries.skip(20).first.value,
+            1980,
+            10,
+            1,
+            0,
+            0,
+            0),
+        availability: Availability.Busy);
     final stringEvent = event.toJson();
     expect(stringEvent, isNotNull);
     final newEvent = Event.fromJson(stringEvent);

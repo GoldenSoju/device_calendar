@@ -11,6 +11,7 @@ dependencies:
   sprintf: ^6.0.0
   timezone: ^0.7.0
   flutter_native_timezone: ^2.0.0
+  rrule: ^0.2.3
 
 dev_dependencies:
   flutter_test:

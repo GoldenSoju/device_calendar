@@ -14,7 +14,7 @@ class Event {
     var location: String? = null
     var url: String? = null
     var attendees: MutableList<Attendee> = mutableListOf()
-    var recurrenceRule: RecurrenceRule? = null
+    var recurrenceRule: String? = null
     var organizer: Attendee? = null
     var reminders: MutableList<Reminder> = mutableListOf()
     var availability: Availability? = null
