@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:rrule/rrule.dart';
 
 import '../../device_calendar.dart';
@@ -127,7 +128,7 @@ class Event {
         rrule = 'RRULE:$rrule';
       }
 
-      print('RRULE JSON: $rrule');
+      debugPrint('RRULE from JSON: $rrule');
       recurrenceRule = RecurrenceRule.fromString(rrule);
     }
 

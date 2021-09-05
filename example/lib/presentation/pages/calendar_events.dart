@@ -46,19 +46,21 @@ class _CalendarEventsPageState extends State<CalendarEventsPage> {
         ),
         body: (_calendarEvents.isNotEmpty || _isLoading)
             ? SafeArea(
-              child: Stack(
+                child: Stack(
                   children: [
                     ListView.builder(
                       itemCount: _calendarEvents.length + 1,
                       itemBuilder: (BuildContext context, int index) {
-                        return  index < _calendarEvents.length ? EventItem(
-                            _calendarEvents[index],
-                            _deviceCalendarPlugin,
-                            _onLoading,
-                            _onDeletedFinished,
-                            _onTapped,
-                            _calendar.isReadOnly != null &&
-                                _calendar.isReadOnly as bool) : const SizedBox(height: 75);
+                        return index < _calendarEvents.length
+                            ? EventItem(
+                                _calendarEvents[index],
+                                _deviceCalendarPlugin,
+                                _onLoading,
+                                _onDeletedFinished,
+                                _onTapped,
+                                _calendar.isReadOnly != null &&
+                                    _calendar.isReadOnly as bool)
+                            : const SizedBox(height: 75);
                       },
                     ),
                     if (_isLoading)
@@ -67,7 +69,7 @@ class _CalendarEventsPageState extends State<CalendarEventsPage> {
                       )
                   ],
                 ),
-            )
+              )
             : Center(child: Text('No events found')),
         floatingActionButton: _getAddEventButton(context));
   }
@@ -171,7 +173,7 @@ class _CalendarEventsPageState extends State<CalendarEventsPage> {
               onPressed: () async {
                 var returnValue =
                     await _deviceCalendarPlugin.deleteCalendar(_calendar.id!);
-                print(
+                debugPrint(
                     'returnValue: ${returnValue.data}, ${returnValue.errors}');
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();

@@ -72,7 +72,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
     try {
       _timezone = await FlutterNativeTimezone.getLocalTimezone();
     } catch (e) {
-      print('Could not get the local timezone');
+      debugPrint('Could not get the local timezone');
     }
 
     _deviceCalendarPlugin = DeviceCalendarPlugin();
@@ -82,7 +82,8 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
     _recurrenceRuleEndType = RecurrenceRuleEndType.Indefinite;
 
     if (_event == null) {
-      print('calendar_event _timezone ------------------------- $_timezone');
+      debugPrint(
+          'calendar_event _timezone ------------------------- $_timezone');
       var currentLocation = timeZoneDatabase.locations[_timezone];
       if (currentLocation != null) {
         _startDate = TZDateTime.now(currentLocation);
@@ -95,7 +96,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
       _event = Event(_calendar.id,
           start: _startDate, end: _endDate, availability: Availability.Busy);
 
-      print('DeviceCalendarPlugin calendar id is: ${_calendar.id}');
+      debugPrint('DeviceCalendarPlugin calendar id is: ${_calendar.id}');
 
       _recurrenceEndDate = _endDate as DateTime;
       _dayOfMonth = {};
@@ -126,7 +127,8 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
 
         if (_event!.recurrenceRule!.until != null) {
           _recurrenceRuleEndType = RecurrenceRuleEndType.SpecifiedEndDate;
-          _recurrenceEndDate = _event!.recurrenceRule!.until ?? DateTime.now().add(const Duration(days: 1));
+          _recurrenceEndDate = _event!.recurrenceRule!.until ??
+              DateTime.now().add(const Duration(days: 1));
         }
 
         _isByDayOfMonth = _event?.recurrenceRule?.hasByMonthDays == null;
@@ -155,11 +157,11 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
   }
 
   void printAttendeeDetails(Attendee attendee) {
-    print(
+    debugPrint(
         'attendee name: ${attendee.name}, email address: ${attendee.emailAddress}, type: ${attendee.role?.enumToString}');
-    print(
+    debugPrint(
         'ios specifics - status: ${attendee.iosAttendeeDetails?.attendanceStatus}, type: ${attendee.iosAttendeeDetails?.attendanceStatus?.enumToString}');
-    print(
+    debugPrint(
         'android specifics - status ${attendee.androidAttendeeDetails?.attendanceStatus}, type: ${attendee.androidAttendeeDetails?.attendanceStatus?.enumToString}');
   }
 
@@ -894,8 +896,7 @@ class _CalendarEventPageState extends State<CalendarEventPage> {
   }
 
   Text _recurrenceFrequencyToText(Frequency? recurrenceFrequency) =>
-    Text(recurrenceFrequency.toString());
-
+      Text(recurrenceFrequency.toString());
 
   Text _recurrenceFrequencyToIntervalText(Frequency? recurrenceFrequency) {
     if (recurrenceFrequency == Frequency.daily) {
