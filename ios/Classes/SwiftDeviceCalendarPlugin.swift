@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import EventKit
+import Foundation
 
 extension Date {
     var millisecondsSinceEpoch: Double { return self.timeIntervalSince1970 * 1000.0 }
@@ -12,8 +13,819 @@ extension EKParticipant {
     }
 }
 
+/// Defines frequencies for recurrence rules.
+///
+/// - daily: Indicates a daily recurrence rule.
+/// - weekly: Indicates a weekly recurrence rule.
+/// - monthly: Indicates a monthly recurrence rule.
+/// - yearly: Indicates a yearly recurrence rule.
+public enum RWMRecurrenceFrequency: Int, Codable {
+    case daily = 0
+    case weekly = 1
+    case monthly = 2
+    case yearly = 3
+}
+
+public enum RWMWeekday: Int, Codable {
+    case sunday = 1
+    case monday = 2
+    case tuesday = 3
+    case wednesday = 4
+    case thursday = 5
+    case friday = 6
+    case saturday = 7
+}
+
+public class RWMRuleParser {
+    private lazy var untilFormat: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(secondsFromGMT: 0)
+        df.dateFormat = "yyyyMMdd'T'HHmmssX"
+        return df
+    }()
+
+    public init() {
+    }
+
+    /// Compares two RRULE strings to see if they have the same components. The components do not need to be in the
+    /// same order. Any `UNTIL` clause is ignored since the date can be in a different format.
+    ///
+    /// - Parameters:
+    ///   - left: The first RRULE string.
+    ///   - right: The second RRULE string.
+    /// - Returns: `true` if the two rules have the same components, ignoring order and any `UNTIL` clause. `false` if different.
+    public func compare(rule left: String, to right: String) -> Bool {
+        var leftParts = split(rule: left).sorted()
+        var rightParts = split(rule: right).sorted()
+        if leftParts.first(where: { $0.hasPrefix("UNTIL") }) != nil && rightParts.first(where: { $0.hasPrefix("UNTIL")}) != nil {
+            leftParts = leftParts.filter { !$0.hasPrefix("UNTIL") }
+            rightParts = leftParts.filter { !$0.hasPrefix("UNTIL") }
+        }
+
+        return leftParts == rightParts
+    }
+
+    private func split(rule: String) -> [String] {
+        var r = rule.uppercased()
+        if r.hasPrefix("RRULE:") {
+            r.removeFirst(6)
+        }
+
+        let parts = r.components(separatedBy: ";")
+
+        return parts
+    }
+
+    /// Parses an RRULE string returning a `RWMRecurrenceRule`.
+    ///
+    /// Valid strings:
+    ///   - The RRULE string may optionally begin with `RRULE:`.
+    ///   - There must be 1 `FREQ=` followed by either `DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`.
+    ///   - There may be 1 `COUNT=` followed by a positive integer.
+    ///   - There may be 1 `UNTIL=` followed by a date. The date may be in one of these formats: "yyyyMMdd'T'HHmmssX", "yyyyMMdd'T'HHmmss", "'TZID'=VV:yyyyMMdd'T'HHmmss", "yyyyMMdd".
+    ///   - Only 1 of either `COUNT` or `UNTIL` is allowed, not both.
+    ///   - There may be 1 `INTERVAL=` followed by a positive integer.
+    ///   - There may be 1 `BYMONTH=` followed by a comma separated list of 1 or more month numbers in the range 1 to 12, or -12 to -1.
+    ///   - There may be 1 `BYDAY=` followed by a comma separated list of 1 or more days of the week, each optionally preceded by a week number. Days of the week must be `SU`, `MO`, `TU`, `WE`, `TH`, `FR`, or `SA`. Week numbers must be in the range 1 to 5 or -5 to -1.
+    ///   - There may be 1 `BYMONTHDAY=` followed by a comma separated list of days of the month in the range 1 to 31 or -31 to -1.
+    ///   - There may be 1 `BYYEARDAY=` followed by a comma separated list of days of the year in the range 1 to 366 or -366 to -1.
+    ///   - There may be 1 `BYWEEKNO=` followed by a comma separated list of week numbers in the range 1 to 53 or -53 to -1.
+    ///   - There may be 1 `WKST=` followed by a day of the week. Days of the week must be `SU`, `MO`, `TU`, `WE`, `TH`, `FR`, or `SA`.
+    ///   - There may be 1 `BYSETPOS=` following by a comma separated list of positive integers.
+    ///   - Each clause must be separated by a semicolon (`;`). No trailing semicolon should be used.
+    ///
+    /// - Parameter rule: The RRULE string.
+    /// - Returns: The resulting recurrence rule. If the RRULE string is invalid in any way, the result is `nil`.
+    public func parse(rule: String) -> RWMRecurrenceRule? {
+        var frequency: RWMRecurrenceFrequency? = nil
+        var interval: Int? = nil
+        var firstDayOfTheWeek: RWMWeekday? = nil
+        var daysOfTheWeek: [RWMRecurrenceDayOfWeek]? = nil
+        var daysOfTheMonth: [Int]? = nil
+        var daysOfTheYear: [Int]? = nil
+        var weeksOfTheYear: [Int]? = nil
+        var monthsOfTheYear: [Int]? = nil
+        var setPositions: [Int]? = nil
+        var recurrenceEnd: RWMRecurrenceEnd? = nil
+
+        let parts = split(rule: rule)
+        for part in parts {
+            let varval = part.components(separatedBy: "=")
+            guard varval.count == 2 else { return nil }
+
+            switch varval[0] {
+            case "FREQ":
+                guard frequency == nil else { return nil } // only allowed one FREQ
+                frequency = parse(frequency: varval[1])
+                guard frequency != nil else { return nil } // invalid FREQ value
+            case "COUNT":
+                guard recurrenceEnd == nil else { return nil } // only one of either COUNT or UNTIL, not both
+                recurrenceEnd = parse(count: varval[1])
+                guard recurrenceEnd != nil else { return nil } // invalid COUNT
+            case "UNTIL":
+                guard recurrenceEnd == nil else { return nil } // only one of either COUNT or UNTIL, not both
+                recurrenceEnd = parse(until: varval[1])
+                guard recurrenceEnd != nil else { return nil } // invalid UNTIL
+            case "INTERVAL":
+                guard interval == nil else { return nil } // only allowed one INTERVAL
+                interval = parse(interval: varval[1])
+                guard interval != nil else { return nil } // invalid INTERVAL
+            case "BYMONTH":
+                guard monthsOfTheYear == nil else { return nil } // only allowed one BYMONTH
+                monthsOfTheYear = parse(byMonth: varval[1])
+                guard monthsOfTheYear != nil else { return nil } // invalid BYMONTH
+            case "BYDAY":
+                guard daysOfTheWeek == nil else { return nil } // only allowed one BYDAY
+                daysOfTheWeek = parse(byDay: varval[1])
+                guard daysOfTheWeek != nil else { return nil } // invalid BYDAY
+            case "WKST":
+                guard firstDayOfTheWeek == nil else { return nil } // only allowed one WKST
+                firstDayOfTheWeek = parse(byWeekStart: varval[1])
+                guard firstDayOfTheWeek != nil else { return nil } // invalid WKST
+            case "BYMONTHDAY":
+                guard daysOfTheMonth == nil else { return nil } // only allowed one BYMONTHDAY
+                daysOfTheMonth = parse(byMonthDay: varval[1])
+                guard daysOfTheMonth != nil else { return nil } // invalid BYMONTHDAY
+            case "BYYEARDAY":
+                guard daysOfTheYear == nil else { return nil } // only allowed one BYYEARDAY
+                daysOfTheYear = parse(byYearDay: varval[1])
+                guard daysOfTheYear != nil else { return nil } // invalid BYYEARDAY
+            case "BYWEEKNO":
+                guard weeksOfTheYear == nil else { return nil } // only allowed one BYWEEKNO
+                weeksOfTheYear = parse(byWeekNo: varval[1])
+                guard weeksOfTheYear != nil else { return nil } // invalid BYWEEKNO
+            case "BYSETPOS":
+                guard setPositions == nil else { return nil } // only allowed one BYSETPOS
+                setPositions = parse(bySetPosition: varval[1])
+                guard setPositions != nil else { return nil } // invalid BYSETPOS
+                /* Not supported by EKRecurrenceRule
+            case "BYHOUR":
+                return nil
+            case "BYMINUTE":
+                return nil
+            case "BYSECOND":
+                return nil
+                 */
+            default:
+                return nil
+            }
+        }
+
+        if let frequency = frequency {
+            return RWMRecurrenceRule(recurrenceWith: frequency, interval: interval, daysOfTheWeek: daysOfTheWeek, daysOfTheMonth: daysOfTheMonth, monthsOfTheYear: monthsOfTheYear, weeksOfTheYear: weeksOfTheYear, daysOfTheYear: daysOfTheYear, setPositions: setPositions, end: recurrenceEnd, firstDay: firstDayOfTheWeek)
+        } else {
+            return nil // no FREQ
+        }
+    }
+
+    /// Returns the RRULE string represented by the provided recurrence rule.
+    ///
+    /// - Parameter from: The recurrence rule.
+    /// - Returns: The RRULE string.
+    public func rule(from: RWMRecurrenceRule) -> String {
+        var parts = [String]()
+        parts.append("FREQ=\(string(from: from.frequency))")
+
+        if let interval = from.interval {
+            parts.append("INTERVAL=\(interval)")
+        }
+        if let end = from.recurrenceEnd {
+            if let date = end.endDate {
+                parts.append("UNTIL=\(untilFormat.string(from: date))")
+            } else {
+                parts.append("COUNT=\(end.count)")
+            }
+        }
+        if let wkst = from.firstDayOfTheWeek {
+            parts.append("WKST=\(string(from: wkst))")
+        }
+        if let nums = from.weeksOfTheYear {
+            parts.append("BYWEEKNO=\(string(from: nums))")
+        }
+        if let days = from.daysOfTheWeek {
+            parts.append("BYDAY=\(string(from: days))")
+        }
+        if let nums = from.monthsOfTheYear {
+            parts.append("BYMONTH=\(string(from: nums))")
+        }
+        if let nums = from.daysOfTheMonth {
+            parts.append("BYMONTHDAY=\(string(from: nums))")
+        }
+        if let nums = from.daysOfTheYear {
+            parts.append("BYYEARDAY=\(string(from: nums))")
+        }
+        if let nums = from.setPositions {
+            parts.append("BYSETPOS=\(string(from: nums))")
+        }
+
+        return "RRULE:" + parts.joined(separator: ";")
+    }
+
+    private func parse(frequency: String) -> RWMRecurrenceFrequency? {
+        switch frequency {
+        case "DAILY":
+            return .daily
+        case "WEEKLY":
+            return .weekly
+        case "MONTHLY":
+            return .monthly
+        case "YEARLY":
+            return .yearly
+        case "HOURLY":
+            return nil // not supported by EKRecurrenceRule
+        case "MINUTELY":
+            return nil // not supported by EKRecurrenceRule
+        case "SECONDLY":
+            return nil // not supported by EKRecurrenceRule
+        default:
+            return nil
+        }
+    }
+
+    private func string(from: RWMRecurrenceFrequency) -> String {
+        switch from {
+        case .daily:
+            return "DAILY"
+        case .weekly:
+            return "WEEKLY"
+        case .monthly:
+            return "MONTHLY"
+        case .yearly:
+            return "YEARLY"
+        }
+    }
+
+    private func parse(count: String) -> RWMRecurrenceEnd? {
+        if let cnt = Int(count) {
+            return RWMRecurrenceEnd(occurrenceCount: cnt)
+        } else {
+            return nil
+        }
+    }
+
+    private func parse(until: String) -> RWMRecurrenceEnd? {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        for format in [ "yyyyMMdd'T'HHmmssX", "yyyyMMdd'T'HHmmss", "'TZID'=VV:yyyyMMdd'T'HHmmss", "yyyyMMdd" ] {
+            df.dateFormat = format
+            if let date = df.date(from: until) {
+                return RWMRecurrenceEnd(end: date)
+            }
+        }
+
+        return nil
+    }
+
+    private func parse(interval: String) -> Int? {
+        if let cnt = Int(interval) {
+            return cnt
+        } else {
+            return nil
+        }
+    }
+
+    private func parseNumberList(_ list: String) -> [Int]? {
+        var res = [Int]()
+        let parts = list.components(separatedBy: ",")
+        for part in parts {
+            if let num = Int(part) {
+                res.append(num)
+            } else {
+                return nil
+            }
+        }
+
+        return res
+    }
+
+    private func string(from: [Int]) -> String {
+        return from.map { String($0) }.joined(separator: ",")
+    }
+
+    private func parse(byMonth: String) -> [Int]? {
+        return parseNumberList(byMonth)
+    }
+
+    private func parse(byWeekStart: String) -> RWMWeekday? {
+        switch byWeekStart {
+        case "SU":
+            return .sunday
+        case "MO":
+            return .monday
+        case "TU":
+            return .tuesday
+        case "WE":
+            return .wednesday
+        case "TH":
+            return .thursday
+        case "FR":
+            return .friday
+        case "SA":
+            return .saturday
+        default:
+            return nil
+        }
+    }
+
+    private func string(from: RWMWeekday) -> String {
+        switch from {
+        case .sunday:
+            return "SU"
+        case .monday:
+            return "MO"
+        case .tuesday:
+            return "TU"
+        case .wednesday:
+            return "WE"
+        case .thursday:
+            return "TH"
+        case .friday:
+            return "FR"
+        case .saturday:
+            return "SA"
+        }
+    }
+
+    private func parse(byDay: String) -> [RWMRecurrenceDayOfWeek]? {
+        var res = [RWMRecurrenceDayOfWeek]()
+        let parts = byDay.components(separatedBy: ",")
+        for part in parts {
+            let scanner = Scanner(string: part)
+            var count = 0
+            scanner.scanInt(&count)
+            var weekday: NSString?
+            if scanner.scanCharacters(from: .alphanumerics, into: &weekday) && scanner.isAtEnd {
+                if let weekday = weekday, let dow = parse(byWeekStart: weekday as String) {
+                    let rec = count == 0 ? RWMRecurrenceDayOfWeek(dow) : RWMRecurrenceDayOfWeek(dow, weekNumber: count)
+                    res.append(rec)
+                } else {
+                    return nil
+                }
+            } else {
+                return nil
+            }
+        }
+
+        return res
+    }
+
+    private func string(from: [RWMRecurrenceDayOfWeek]) -> String {
+        return from.map {
+            var res = ""
+            if $0.weekNumber != 0 {
+                res += String($0.weekNumber)
+            }
+            res += string(from: $0.dayOfTheWeek)
+            return res
+        }.joined(separator: ",")
+    }
+
+    private func parse(byMonthDay: String) -> [Int]? {
+        return parseNumberList(byMonthDay)
+    }
+
+    private func parse(byYearDay: String) -> [Int]? {
+        return parseNumberList(byYearDay)
+    }
+
+    private func parse(byWeekNo: String) -> [Int]? {
+        return parseNumberList(byWeekNo)
+    }
+
+    private func parse(bySetPosition: String) -> [Int]? {
+        return parseNumberList(bySetPosition)
+    }
+}
+
+/// The RWMRecurrenceEnd struct defines the end of a recurrence rule defined by an RWMRecurrenceRule object.
+/// The recurrence end can be specified by a date (date-based) or by a maximum count of occurrences (count-based).
+/// An event which is set to never end should have its RWMRecurrenceEnd set to nil.
+public struct RWMRecurrenceEnd: Codable, Equatable {
+    /// The end date of the recurrence end, or `nil` if the recurrence end is count-based.
+    public let endDate: Date?
+    /// The occurrence count of the recurrence end, or `0` if the recurrence end is date-based.
+    public let count: Int
+
+    /// Initializes and returns a date-based recurrence end with a given end date.
+    ///
+    /// - Parameter end: The end date.
+    public init(end: Date) {
+        self.endDate = end
+        self.count = 0
+    }
+
+    /// Initializes and returns a count-based recurrence end with a given maximum occurrence count.
+    ///
+    /// - Parameter occurrenceCount: The maximum occurrence count.
+    public init(occurrenceCount: Int) {
+        self.endDate = nil
+        if occurrenceCount > 0 {
+            self.count = occurrenceCount
+        } else {
+            fatalError("occurrenceCount must be > 0")
+        }
+    }
+
+    public static func==(lhs: RWMRecurrenceEnd, rhs: RWMRecurrenceEnd) -> Bool {
+        if let ldate = lhs.endDate {
+            if let rdate = rhs.endDate {
+                return ldate == rdate // both are dates
+            } else {
+                return false // one date and one count
+            }
+        } else {
+            if rhs.endDate != nil {
+                return false // one date and one count
+            } else {
+                return lhs.count == rhs.count // both are counts
+            }
+        }
+    }
+}
+
+/// The `RWMRecurrenceDayOfWeek` struct represents a day of the week for use with an `RWMRecurrenceRule` object.
+/// A day of the week can optionally have a week number, indicating a specific day in the recurrence rule’s frequency.
+/// For example, a day of the week with a day value of `Tuesday` and a week number of `2` would represent the second
+/// Tuesday of every month in a monthly recurrence rule, and the second Tuesday of every year in a yearly recurrence
+/// rule. A day of the week with a week number of `0` ignores its week number.
+public struct RWMRecurrenceDayOfWeek: Codable, Equatable {
+    /// The day of the week.
+    public let dayOfTheWeek: RWMWeekday
+    /// The week number of the day of the week.
+    ///
+    /// Values range from `-53` to `53`. A negative value indicates a value from the end of the range. `0` indicates the week number is irrelevant.
+    public let weekNumber: Int
+
+    /// Initializes and returns a day of the week with a given day and week number.
+    ///
+    /// - Parameters:
+    ///   - dayOfTheWeek: The day of the week.
+    ///   - weekNumber: The week number.
+    public init(dayOfTheWeek: RWMWeekday, weekNumber: Int) {
+        self.dayOfTheWeek = dayOfTheWeek
+        if weekNumber < -53 || weekNumber > 53 {
+            fatalError("weekNumber must be -53 to 53")
+        } else {
+            self.weekNumber = weekNumber
+        }
+    }
+
+    /// Creates and returns a day of the week with a given day.
+    ///
+    /// - Parameter dayOfTheWeek: The day of the week.
+    public init(_ dayOfTheWeek: RWMWeekday) {
+        self.init(dayOfTheWeek: dayOfTheWeek, weekNumber: 0)
+    }
+
+    /// Creates and returns an autoreleased day of the week with a given day and week number.
+    ///
+    /// - Parameters:
+    ///   - dayOfTheWeek: The day of the week.
+    ///   - weekNumber: The week number.
+    public init(_ dayOfTheWeek: RWMWeekday, weekNumber: Int) {
+        self.init(dayOfTheWeek: dayOfTheWeek, weekNumber: weekNumber)
+    }
+
+    public static func==(lhs: RWMRecurrenceDayOfWeek, rhs: RWMRecurrenceDayOfWeek) -> Bool {
+        return lhs.dayOfTheWeek == rhs.dayOfTheWeek && lhs.weekNumber == rhs.weekNumber
+    }
+}
+
+/// The `RWMRecurrenceRule` class is used to describe the recurrence pattern for a recurring event.
+public struct RWMRecurrenceRule: Codable, Equatable {
+    /// The frequency of the recurrence rule.
+    let frequency: RWMRecurrenceFrequency
+    /// Specifies how often the recurrence rule repeats over the unit of time indicated by its frequency. For example, a recurrence rule with a frequency type of `.weekly` and an interval of `2` repeats every two weeks.
+    let interval: Int?
+    /// Indicates which day of the week the recurrence rule treats as the first day of the week. No value indicates that this property is not set for the recurrence rule.
+    let firstDayOfTheWeek: RWMWeekday?
+    /// The days of the week associated with the recurrence rule, as an array of `RWMRecurrenceDayOfWeek` objects.
+    let daysOfTheWeek: [RWMRecurrenceDayOfWeek]?
+    /// The days of the month associated with the recurrence rule, as an array of `Int`. Values can be from 1 to 31 and from -1 to -31. This property value is invalid with a frequency type of `.weekly`.
+    let daysOfTheMonth: [Int]?
+    /// The days of the year associated with the recurrence rule, as an array of `Int`. Values can be from 1 to 366 and from -1 to -366. This property value is valid only for recurrence rules initialized with a frequency type of `.yearly`.
+    let daysOfTheYear: [Int]?
+    /// The weeks of the year associated with the recurrence rule, as an array of `Int` objects. Values can be from 1 to 53 and from -1 to -53. This property value is valid only for recurrence rules initialized with specific weeks of the year and a frequency type of `.yearly`.
+    let weeksOfTheYear: [Int]?
+    /// The months of the year associated with the recurrence rule, as an array of `Int` objects. Values can be from 1 to 12. This property value is valid only for recurrence rules initialized with specific months of the year and a frequency type of `.yearly`.
+    let monthsOfTheYear: [Int]?
+    /// An array of ordinal numbers that filters which recurrences to include in the recurrence rule’s frequency. For example, a yearly recurrence rule that has a daysOfTheWeek value that specifies Monday through Friday, and a setPositions array containing 2 and -1, occurs only on the second weekday and last weekday of every year.
+    let setPositions: [Int]?
+    /// Indicates when the recurrence rule ends. This can be represented by an end date or a number of occurrences.
+    let recurrenceEnd: RWMRecurrenceEnd?
+
+    /// Initializes and returns a simple recurrence rule with a given frequency, interval, and end.
+    ///
+    /// - Parameters:
+    ///   - type: Initializes and returns a simple recurrence rule with a given frequency, interval, and end.
+    ///   - interval: The interval between instances of this recurrence. For example, a weekly recurrence rule with an interval of `2` occurs every other week. Must be greater than `0`.
+    ///   - end: The end of the recurrence rule.
+    public init?(recurrenceWith type: RWMRecurrenceFrequency, interval: Int?, end: RWMRecurrenceEnd?) {
+        self.init(recurrenceWith: type, interval: interval, daysOfTheWeek: nil, daysOfTheMonth: nil, monthsOfTheYear: nil, weeksOfTheYear: nil, daysOfTheYear: nil, setPositions: nil, end: end, firstDay: nil)
+    }
+
+    /// Initializes and returns a recurrence rule with a given frequency and additional scheduling information.
+    ///
+    /// Returns `nil` is any invalid parameters are provided.
+    ///
+    /// Negative value indicate counting backwards from the end of the recurrence rule's frequency.
+    ///
+    /// - Parameters:
+    ///   - type: The frequency of the recurrence rule. Can be daily, weekly, monthly, or yearly.
+    ///   - interval: The interval between instances of this recurrence. For example, a weekly recurrence rule with an interval of `2` occurs every other week. Must be greater than `0`.
+    ///   - days: The days of the week that the event occurs, as an array of `RWMRecurrenceDayOfWeek` objects.
+    ///   - monthDays: The days of the month that the event occurs, as an array of `Int`. Values can be from 1 to 31 and from -1 to -31. This parameter is not valid for recurrence rules of type `.weekly`.
+    ///   - months: The months of the year that the event occurs, as an array of `Int`. Values can be from 1 to 12.
+    ///   - weeksOfTheYear: The weeks of the year that the event occurs, as an array of `Int`. Values can be from 1 to 53 and from -1 to -53. This parameter is only valid for recurrence rules of type `.yearly`.
+    ///   - daysOfTheYear: The days of the year that the event occurs, as an array of `Int`. Values can be from 1 to 366 and from -1 to -366. This parameter is only valid for recurrence rules of type `.yearly`.
+    ///   - setPositions: An array of ordinal numbers that filters which recurrences to include in the recurrence rule’s frequency. See `setPositions` for more information.
+    ///   - end: The end of the recurrence rule.
+    ///   - firstDay: Indicates what day of the week to be used as the first day of a week. Defaults to Monday.
+    public init?(recurrenceWith type: RWMRecurrenceFrequency, interval: Int?, daysOfTheWeek days: [RWMRecurrenceDayOfWeek]?, daysOfTheMonth monthDays: [Int]?, monthsOfTheYear months: [Int]?, weeksOfTheYear: [Int]?, daysOfTheYear: [Int]?, setPositions: [Int]?, end: RWMRecurrenceEnd?, firstDay: RWMWeekday?) {
+        // NOTE - See https://icalendar.org/iCalendar-RFC-5545/3-3-10-recurrence-rule.html
+
+        if let interval = interval, interval <= 0 { return nil } // If specified, INTERVAL must be 1 or more
+        if let days = days {
+            // In daily or weekly mode or in yearly mode with week numbers, the days should not have a week number.
+            if (type != .monthly && type != .yearly) || (type == .yearly && weeksOfTheYear != nil) {
+                for day in days {
+                    if day.weekNumber != 0 { return nil }
+                }
+            }
+        }
+        if let daysOfMonth = monthDays {
+            guard type != .weekly else { return nil }
+
+            for day in daysOfMonth {
+                if day < -31 || day > 31 || day == 0 { return nil }
+            }
+        }
+        if let monthsOfYear = months {
+            for month in monthsOfYear {
+                if month < 1 || month > 12 { return nil }
+            }
+        }
+        if let weeksOfTheYear = weeksOfTheYear {
+            guard type == .yearly else { return nil }
+
+            for week in weeksOfTheYear {
+                if week < -53 || week > 53 || week == 0 { return nil }
+            }
+        }
+        if let daysOfTheYear = daysOfTheYear {
+            // Also supported by secondly, minutely, and hourly
+            guard type == .yearly else { return nil }
+
+            for day in daysOfTheYear {
+                if day < -366 || day > 366 || day == 0 { return nil }
+            }
+        }
+        if let setPositions = setPositions {
+            for pos in setPositions {
+                if pos < -366 || pos > 366 || pos == 0 { return nil }
+            }
+        }
+
+        self.frequency = type
+        self.interval = interval
+        self.firstDayOfTheWeek = firstDay
+        self.daysOfTheWeek = days
+        self.daysOfTheMonth = monthDays
+        self.daysOfTheYear = daysOfTheYear
+        self.weeksOfTheYear = weeksOfTheYear
+        self.monthsOfTheYear = months
+        self.setPositions = setPositions
+        self.recurrenceEnd = end
+    }
+
+    public init?(recurrenceWith rule: EKRecurrenceRule) {
+            var daysOfTheWeek: [RWMRecurrenceDayOfWeek]?
+            if let dows = rule.daysOfTheWeek {
+                daysOfTheWeek = []
+                for dow in dows {
+                    if let rwmwd = RWMWeekday(rawValue: dow.dayOfTheWeek.rawValue) {
+                        daysOfTheWeek?.append(RWMRecurrenceDayOfWeek(dayOfTheWeek: rwmwd, weekNumber: dow.weekNumber))
+                    } else {
+                        return nil
+                    }
+                }
+            }
+
+            let end: RWMRecurrenceEnd?
+            if let rend = rule.recurrenceEnd {
+                if let date = rend.endDate {
+                    end = RWMRecurrenceEnd(end: date)
+                } else {
+                    end = RWMRecurrenceEnd(occurrenceCount: rend.occurrenceCount)
+                }
+            } else {
+                end = nil
+            }
+
+            if let frequency = RWMRecurrenceFrequency(rawValue: rule.frequency.rawValue) {
+                // For weekly recurrence rules with days of the week set, set the rule's firstDay if the current calendar
+                // starts its week on a day other than Monday.
+                var firstDay: RWMWeekday? = nil
+                if frequency == .weekly && daysOfTheWeek != nil && Calendar.current.firstWeekday != 2 {
+                    firstDay = RWMWeekday(rawValue: Calendar.current.firstWeekday)
+                }
+
+                self.init(recurrenceWith: frequency, interval: rule.interval == 1 ? nil : rule.interval, daysOfTheWeek: daysOfTheWeek, daysOfTheMonth: rule.daysOfTheMonth as! [Int]?, monthsOfTheYear: rule.monthsOfTheYear as! [Int]?, weeksOfTheYear: rule.weeksOfTheYear as! [Int]?, daysOfTheYear: rule.daysOfTheYear as! [Int]?, setPositions: rule.setPositions as! [Int]?, end: end, firstDay: firstDay)
+            } else {
+                return nil
+            }
+        }
+
+    public static func==(lhs: RWMRecurrenceRule, rhs: RWMRecurrenceRule) -> Bool {
+        return
+            lhs.frequency == rhs.frequency &&
+            lhs.interval == rhs.interval &&
+            lhs.firstDayOfTheWeek == rhs.firstDayOfTheWeek &&
+            lhs.daysOfTheWeek == rhs.daysOfTheWeek &&
+            lhs.daysOfTheMonth == rhs.daysOfTheMonth &&
+            lhs.daysOfTheYear == rhs.daysOfTheYear &&
+            lhs.weeksOfTheYear == rhs.weeksOfTheYear &&
+            lhs.monthsOfTheYear == rhs.monthsOfTheYear &&
+            lhs.setPositions == rhs.setPositions &&
+            lhs.recurrenceEnd == rhs.recurrenceEnd
+    }
+}
+
+extension EKRecurrenceRule {
+    /// This convenience initializer allows you to create an EKRecurrenceRule from a standard iCalendar RRULE
+    /// string. Please see https://icalendar.org/iCalendar-RFC-5545/3-3-10-recurrence-rule.html for a reference
+    /// to the RRULE syntax.
+    /// Only frequencies of DAILY, WEEKLY, MONTHLY, and YEARLY are supported. Also note that there are many valid
+    /// RRULE strings that will parse but EventKit may not process correctly.
+    ///
+    /// If `rrule` is an invalid RRULE, the result is `nil`.
+    ///
+    /// See `RWMRecurrenceRule isEventKitSafe` for details about RRULE values safe to be used with Event Kit.
+    ///
+    /// - Parameter rrule: The RRULE string in the form RRULE:FREQUENCY=...
+    public convenience init?(recurrenceWith rrule: String) {
+        if let rule = RWMRuleParser().parse(rule: rrule) {
+            self.init(recurrenceWith: rule)
+        } else {
+            return nil
+        }
+    }
+
+    /// Creates a new EKRecurrenceRule from a RWMRecurrenceRule. If `rule` can't be converted, the result is `nil`.
+    ///
+    /// Note that Event Kit may not properly process some recurrence rules.
+    ///
+    /// - Parameter rule: The RWMRecurrenceRule.
+    public convenience init?(recurrenceWith rule: RWMRecurrenceRule) {
+        var daysOfTheWeek: [EKRecurrenceDayOfWeek]?
+        if let dows = rule.daysOfTheWeek {
+            daysOfTheWeek = []
+            for dow in dows {
+                if let ekwd = EKWeekday(rawValue: dow.dayOfTheWeek.rawValue) {
+                    daysOfTheWeek?.append(EKRecurrenceDayOfWeek(dayOfTheWeek: ekwd, weekNumber: dow.weekNumber))
+                } else {
+                    return nil
+                }
+            }
+        }
+
+        let end: EKRecurrenceEnd?
+        if let rend = rule.recurrenceEnd {
+            if let date = rend.endDate {
+                end = EKRecurrenceEnd(end: date)
+            } else {
+                end = EKRecurrenceEnd(occurrenceCount: rend.count)
+            }
+        } else {
+            end = nil
+        }
+
+        if let frequency = EKRecurrenceFrequency(rawValue: rule.frequency.rawValue) {
+            self.init(recurrenceWith: frequency, interval: rule.interval ?? 1, daysOfTheWeek: daysOfTheWeek, daysOfTheMonth: rule.daysOfTheMonth as [NSNumber]?, monthsOfTheYear: rule.monthsOfTheYear as [NSNumber]?, weeksOfTheYear: rule.weeksOfTheYear as [NSNumber]?, daysOfTheYear: rule.daysOfTheYear as [NSNumber]?, setPositions: rule.setPositions as [NSNumber]?, end: end)
+        } else {
+            return nil
+        }
+    }
+
+    /// Returns the RRULE representation. If the sender can't be processed, the result is `nil`.
+    public var rrule: String? {
+        if let rule = RWMRecurrenceRule(recurrenceWith: self) {
+            let parser = RWMRuleParser()
+
+            return parser.rule(from: rule)
+        } else {
+            return nil
+        }
+    }
+}
+
+extension Calendar {
+    /// Returns the range of the given weekday for the supplied year or month of year.
+    ///
+    ///  Examples:
+    ///    - To find out how many Tuesdays there are in 2018, pass in `3` for the `weekday` and `2018` for the `year` and the default of `0` for the `month`.
+    ///    - To find out how many Saturdays there are in May of 2018, pass in `7` for the `weekday`, `2018` for the `year`, and `5` for the `month`.
+    ///    - To find out how many Mondays there are in the last month of 2018, pass in `2` for the `weekday`, `2018` for the `year`, and `-1` for the `month`.
+    ///
+    /// - Parameters:
+    ///   - weekday: The day of the week. Values range from 1 to 7, with Sunday being 1.
+    ///   - year: A calendar year.
+    ///   - month: A month within the calendar year. The value of `0` means the month is ignored. Negative values start from the last month of the year. `-1` is the last month. `-2` is the next-to-last month, etc.
+    /// - Returns: A range from `1` through `n` where `n` is the number of times the given weekday appears in the year or month of the year. If `month` is out of range for the year, the result is `nil`.
+    public func range(of weekday: Int, in year: Int, month: Int = 0) -> ClosedRange<Int>? {
+        if month > 0 {
+            let comps = DateComponents(year: year, month: month, weekday: weekday, weekdayOrdinal: -1)
+            if let date = self.date(from: comps) {
+                let count = self.component(.weekdayOrdinal, from: date)
+
+                return 1...count
+            }
+        } else {
+            // Get first day of year for the given weekday
+            let startComps = DateComponents(year: year, month: 1, weekday: weekday, weekdayOrdinal: 1)
+            // Get last day of year for the given weekday
+            let finishComps = DateComponents(year: year, month: 12, weekday: weekday, weekdayOrdinal: -1)
+            if let startDate = self.date(from: startComps), let finishDate = self.date(from: finishComps) {
+                // Get the number of days between the two dates
+                let days = self.dateComponents([.day], from: startDate, to: finishDate).day!
+
+                return 1...(days / 7 + 1)
+            }
+        }
+
+        return nil
+    }
+
+    /// Converts relative components to normalized components.
+    ///
+    /// The following relative components are normalized:
+    ///   - year set, month set, weekday set, weekday ordinal set to +/- instance of weekday within month
+    ///   - year set, no month, weekday set, weekday ordinal set to +/- instance of weekday within year
+    ///   - year set, month set, day set to +/- day of month
+    ///   - year set, no month, day set to +/- day of year
+    ///
+    /// All other components are returned as-is.
+    ///
+    /// - Parameter components: The relative date components.
+    /// - Returns: The normalized date components.
+    func relativeComponents(from components: DateComponents) -> DateComponents {
+        var newComponents = components
+
+        if let year = components.year {
+            if let weekday = components.weekday, let ordinal = components.weekdayOrdinal {
+                if ordinal < 0 {
+                    if let month = components.month {
+                        if let rng = self.range(of: weekday, in: year, month: month) {
+                            newComponents.weekdayOrdinal = rng.count + ordinal + 1
+                        }
+                    } else {
+                        if let rng = self.range(of: weekday, in: year) {
+                            newComponents.weekdayOrdinal = rng.count + ordinal + 1
+                        }
+                    }
+                } else {
+                    // Calendar already handles positive weekdayOrdinal
+                }
+            } else if let day = components.day {
+                if components.weekday == nil {
+                    if let month = components.month {
+                        if day < 0 {
+                            if let startOfMonth = self.date(from: DateComponents(year: year, month: month, day: 1)),
+                                let daysInMonth = self.range(of: .day, in: .month, for: startOfMonth)?.count {
+                                newComponents.day = daysInMonth + day + 1
+                            }
+                        } else {
+                            // Calendar already handles positive day
+                        }
+                    } else {
+                        if day < 0 {
+                            if let startOfYear = self.date(from: DateComponents(year: year, month: 1, day: 1)),
+                                let daysInYear = self.range(of: .day, in: .year, for: startOfYear)?.count {
+                                newComponents.day = daysInYear + day + 1
+                            }
+                        } else {
+                            // Calendar already handles positive day
+                        }
+                    }
+                }
+            }
+        }
+
+        return newComponents
+    }
+
+    public func date(fromRelative components: DateComponents) -> Date? {
+        return self.date(from: self.relativeComponents(from: components))
+    }
+
+    public func date(_ date: Date, matchesRelativeComponents components: DateComponents) -> Bool {
+        return self.date(date, matchesComponents: self.relativeComponents(from: components))
+    }
+}
+
 public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
-    struct Calendar: Codable {
+    struct DeviceCalendar: Codable {
         let id: String
         let name: String
         let isReadOnly: Bool
@@ -35,23 +847,16 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
         let attendees: [Attendee]
         let location: String?
         let url: String?
-        let recurrenceRule: RecurrenceRule?
+        let recurrenceRule: String?
         let organizer: Attendee?
         let reminders: [Reminder]
         let availability: Availability?
     }
-    
-    struct RecurrenceRule: Codable {
-        let recurrenceFrequency: Int
-        let totalOccurrences: Int?
-        let interval: Int
-        let endDate: Int64?
-        let daysOfWeek: [Int]?
-        let dayOfMonth: Int?
-        let monthOfYear: Int?
-        let weekOfMonth: Int?
-    }
-    
+
+
+
+
+
     struct Attendee: Codable {
         let name: String?
         let emailAddress: String
@@ -69,7 +874,9 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
 		case TENTATIVE
 		case UNAVAILABLE
     }
-    
+
+
+
     static let channelName = "plugins.builttoroam.com/device_calendar"
     let notFoundErrorCode = "404"
     let notAllowed = "405"
@@ -195,9 +1002,9 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
         checkPermissionsThenExecute(permissionsGrantedAction: {
             let ekCalendars = self.eventStore.calendars(for: .event)
             let defaultCalendar = self.eventStore.defaultCalendarForNewEvents
-            var calendars = [Calendar]()
+            var calendars = [DeviceCalendar]()
             for ekCalendar in ekCalendars {
-                let calendar = Calendar(
+                let calendar = DeviceCalendar(
                     id: ekCalendar.calendarIdentifier,
                     name: ekCalendar.title,
                     isReadOnly: !ekCalendar.allowsContentModifications,
@@ -327,6 +1134,17 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
         }
         
         let recurrenceRule = parseEKRecurrenceRules(ekEvent)
+
+        var rruleString : String?
+
+        if (recurrenceRule != nil) {
+            let parser = RWMRuleParser()
+
+            rruleString = parser.rule(from: recurrenceRule!)
+        }
+
+
+
         let event = Event(
             eventId: ekEvent.eventIdentifier,
             calendarId: calendarId,
@@ -339,7 +1157,8 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
             attendees: attendees,
             location: ekEvent.location,
             url: ekEvent.url?.absoluteString,
-            recurrenceRule: recurrenceRule,
+//             recurrenceRule: recurrenceRule,
+            recurrenceRule: rruleString,
             organizer: convertEkParticipantToAttendee(ekParticipant: ekEvent.organizer),
             reminders: reminders,
             availability: convertEkEventAvailability(ekEventAvailability: ekEvent.availability)
@@ -372,157 +1191,29 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
         }
     }
     
-    private func parseEKRecurrenceRules(_ ekEvent: EKEvent) -> RecurrenceRule? {
-        var recurrenceRule: RecurrenceRule?
+    private func parseEKRecurrenceRules(_ ekEvent: EKEvent) -> RWMRecurrenceRule? {
+        var recurrenceRule: RWMRecurrenceRule?
         if ekEvent.hasRecurrenceRules {
             let ekRecurrenceRule = ekEvent.recurrenceRules![0]
-            var frequency: Int
-            switch ekRecurrenceRule.frequency {
-            case EKRecurrenceFrequency.daily:
-                frequency = 0
-            case EKRecurrenceFrequency.weekly:
-                frequency = 1
-            case EKRecurrenceFrequency.monthly:
-                frequency = 2
-            case EKRecurrenceFrequency.yearly:
-                frequency = 3
-            default:
-                frequency = 0
-            }
-            
-            var totalOccurrences: Int?
-            var endDate: Int64?
-            if(ekRecurrenceRule.recurrenceEnd?.occurrenceCount != nil  && ekRecurrenceRule.recurrenceEnd?.occurrenceCount != 0) {
-                totalOccurrences = ekRecurrenceRule.recurrenceEnd?.occurrenceCount
-            }
-            
-            let endDateMs = ekRecurrenceRule.recurrenceEnd?.endDate?.millisecondsSinceEpoch
-            if(endDateMs != nil) {
-                endDate = Int64(exactly: endDateMs!)
-            }
-            
-            var weekOfMonth = ekRecurrenceRule.setPositions?.first?.intValue
-            
-            var daysOfWeek: [Int]?
-            if ekRecurrenceRule.daysOfTheWeek != nil && !ekRecurrenceRule.daysOfTheWeek!.isEmpty {
-                daysOfWeek = []
-                for dayOfWeek in ekRecurrenceRule.daysOfTheWeek! {
-                    daysOfWeek!.append(dayOfWeek.dayOfTheWeek.rawValue - 1)
-                    
-                    if weekOfMonth == nil {
-                        weekOfMonth = dayOfWeek.weekNumber
-                    }
-                }
-            }
-            
-            // For recurrence of nth day of nth month every year, no calendar parameters are given
-            // So we need to explicitly set them from event start date
-            var dayOfMonth = ekRecurrenceRule.daysOfTheMonth?.first?.intValue
-            var monthOfYear = ekRecurrenceRule.monthsOfTheYear?.first?.intValue
-            if (ekRecurrenceRule.frequency == EKRecurrenceFrequency.yearly
-                && weekOfMonth == nil && dayOfMonth == nil && monthOfYear == nil) {
-                let dateFormatter = DateFormatter()
-                
-                // Setting day of the month
-                dateFormatter.dateFormat = "d"
-                dayOfMonth = Int(dateFormatter.string(from: ekEvent.startDate))
-                
-                // Setting month of the year
-                dateFormatter.dateFormat = "M"
-                monthOfYear = Int(dateFormatter.string(from: ekEvent.startDate))
-            }
-            
-            recurrenceRule = RecurrenceRule(
-                recurrenceFrequency: frequency,
-                totalOccurrences: totalOccurrences,
-                interval: ekRecurrenceRule.interval,
-                endDate: endDate,
-                daysOfWeek: daysOfWeek,
-                dayOfMonth: dayOfMonth,
-                monthOfYear: monthOfYear,
-                weekOfMonth: weekOfMonth)
+//             print("EKRecurrenceRule: \(ekRecurrenceRule)")
+            recurrenceRule = RWMRecurrenceRule(recurrenceWith: ekRecurrenceRule)
         }
-        
         return recurrenceRule
     }
     
     private func createEKRecurrenceRules(_ arguments: [String : AnyObject]) -> [EKRecurrenceRule]?{
-        let recurrenceRuleArguments = arguments[recurrenceRuleArgument] as? Dictionary<String, AnyObject>
+
+        let recurrenceRuleArguments = arguments[recurrenceRuleArgument] as? String
+//         print("RWMRecurrenceRule: \(recurrenceRuleArguments)")
+
         if recurrenceRuleArguments == nil {
             return nil
         }
-        
-        let recurrenceFrequencyIndex = recurrenceRuleArguments![recurrenceFrequencyArgument] as? NSInteger
-        let totalOccurrences = recurrenceRuleArguments![totalOccurrencesArgument] as? NSInteger
-        let interval = recurrenceRuleArguments![intervalArgument] as? NSInteger
-        var recurrenceInterval = 1
-        let endDate = recurrenceRuleArguments![endDateArgument] as? NSNumber
-        let namedFrequency = validFrequencyTypes[recurrenceFrequencyIndex!]
-        
-        var recurrenceEnd:EKRecurrenceEnd?
-        if endDate != nil {
-            recurrenceEnd = EKRecurrenceEnd(end: Date.init(timeIntervalSince1970: endDate!.doubleValue / 1000))
-        } else if(totalOccurrences != nil && totalOccurrences! > 0) {
-            recurrenceEnd = EKRecurrenceEnd(occurrenceCount: totalOccurrences!)
-        }
-        
-        if interval != nil && interval! > 1 {
-            recurrenceInterval = interval!
-        }
-                
-        let daysOfWeekIndices = recurrenceRuleArguments![daysOfWeekArgument] as? [Int]
-        var daysOfWeek : [EKRecurrenceDayOfWeek]?
-        
-        if daysOfWeekIndices != nil && !daysOfWeekIndices!.isEmpty {
-            daysOfWeek = []
-            for dayOfWeekIndex in daysOfWeekIndices! {
-                // Append week number to BYDAY for yearly or monthly with 'last' week number
-                if let weekOfMonth = recurrenceRuleArguments![weekOfMonthArgument] as? Int {
-                    if namedFrequency == EKRecurrenceFrequency.yearly || weekOfMonth == -1 {
-                        daysOfWeek!.append(EKRecurrenceDayOfWeek.init(
-                            dayOfTheWeek: EKWeekday.init(rawValue: dayOfWeekIndex + 1)!,
-                            weekNumber: weekOfMonth
-                        ))
-                    }
-                } else {
-                    daysOfWeek!.append(EKRecurrenceDayOfWeek.init(EKWeekday.init(rawValue: dayOfWeekIndex + 1)!))
-                }
-            }
-        }
-        
-        var dayOfMonthArray : [NSNumber]?
-        if let dayOfMonth = recurrenceRuleArguments![dayOfMonthArgument] as? Int {
-            dayOfMonthArray = []
-            dayOfMonthArray!.append(NSNumber(value: dayOfMonth))
-        }
-        
-        var monthOfYearArray : [NSNumber]?
-        if let monthOfYear = recurrenceRuleArguments![monthOfYearArgument] as? Int {
-            monthOfYearArray = []
-            monthOfYearArray!.append(NSNumber(value: monthOfYear))
-        }
-        
-        // Append BYSETPOS only on monthly (but not last), yearly's week number (and last for monthly) appends to BYDAY
-        var weekOfMonthArray : [NSNumber]?
-        if namedFrequency == EKRecurrenceFrequency.monthly {
-            if let weekOfMonth = recurrenceRuleArguments![weekOfMonthArgument] as? Int {
-                if weekOfMonth != -1 {
-                    weekOfMonthArray = []
-                    weekOfMonthArray!.append(NSNumber(value: weekOfMonth))
-                }
-            }
-        }
-        
-        return [EKRecurrenceRule(
-            recurrenceWith: namedFrequency,
-            interval: recurrenceInterval,
-            daysOfTheWeek: daysOfWeek,
-            daysOfTheMonth: dayOfMonthArray,
-            monthsOfTheYear: monthOfYearArray,
-            weeksOfTheYear: nil,
-            daysOfTheYear: nil,
-            setPositions: weekOfMonthArray,
-            end: recurrenceEnd)]
+        var ekRecurrenceRule = [EKRecurrenceRule]()
+
+        ekRecurrenceRule.append(EKRecurrenceRule(recurrenceWith: recurrenceRuleArguments!)!)
+
+        return  ekRecurrenceRule
     }
     
     private func setAttendees(_ arguments: [String : AnyObject], _ ekEvent: EKEvent?) {
@@ -870,5 +1561,5 @@ extension UIColor {
 
         return nil
     }
-}
 
+}

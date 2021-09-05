@@ -45,27 +45,29 @@ class _CalendarEventsPageState extends State<CalendarEventsPage> {
           actions: [_getDeleteButton()],
         ),
         body: (_calendarEvents.isNotEmpty || _isLoading)
-            ? Stack(
-                children: [
-                  ListView.builder(
-                    itemCount: _calendarEvents.length,
-                    itemBuilder: (BuildContext context, int index) {
-                      return EventItem(
-                          _calendarEvents[index],
-                          _deviceCalendarPlugin,
-                          _onLoading,
-                          _onDeletedFinished,
-                          _onTapped,
-                          _calendar.isReadOnly != null &&
-                              _calendar.isReadOnly as bool);
-                    },
-                  ),
-                  if (_isLoading)
-                    Center(
-                      child: CircularProgressIndicator(),
-                    )
-                ],
-              )
+            ? SafeArea(
+              child: Stack(
+                  children: [
+                    ListView.builder(
+                      itemCount: _calendarEvents.length + 1,
+                      itemBuilder: (BuildContext context, int index) {
+                        return  index < _calendarEvents.length ? EventItem(
+                            _calendarEvents[index],
+                            _deviceCalendarPlugin,
+                            _onLoading,
+                            _onDeletedFinished,
+                            _onTapped,
+                            _calendar.isReadOnly != null &&
+                                _calendar.isReadOnly as bool) : const SizedBox(height: 75);
+                      },
+                    ),
+                    if (_isLoading)
+                      Center(
+                        child: CircularProgressIndicator(),
+                      )
+                  ],
+                ),
+            )
             : Center(child: Text('No events found')),
         floatingActionButton: _getAddEventButton(context));
   }
